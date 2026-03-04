@@ -1,0 +1,169 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+#define SENZOR_PLOAIE A0
+#define LED_STATUS=D8
+#define SERVO_STANGA=D9
+#define SERVO_DREAPTA=D10
+#define BUTON_SWIPE=D11
+
+Servo stergatorStanga;
+Servo stergatorDreapta;
+
+const int PRAG_PLOAIE  = 500;
+const int PRAG_INTENS  = 700;
+const unsigned long TIMER_CONFIRMARE  = 3000;
+const unsigned long TIMP_CICLU_NORMAL = 1500;
+const unsigned long TIMP_CICLU_RAPID  = 800;
+const int UNGHIU_PORNIRE = 30;
+const int UNGHIU_SFARSIT = 150;
+const int PAS_SERVO      = 1;
+const unsigned long INTERVAL_SERVO = 20;
+
+bool ploaieConfirmata  = false;
+bool ploaieAnterior    = false;
+unsigned long timpDetectie = 0;
+unsigned long durataCiclu  = TIMP_CICLU_NORMAL;
+
+int  pozitieCurenta = UNGHIU_PORNIRE;
+int  directie       = 1;
+unsigned long ultimulPas = 0;
+
+bool swipeManual     = false;
+bool swipeInProgress = false;
+int  butonDebounce   = HIGH;
+unsigned long ultimDebounce = 0;
+
+int citesteSenzor() {
+  return map(analogRead(SENZOR_PLOAIE), 0, 1023, 1023, 0);
+}
+
+bool verificaPloaie() {
+  int valoare        = citesteSenzor();
+  unsigned long acum = millis();
+  bool ploaieAcum    = (valoare > PRAG_PLOAIE);
+
+  if (ploaieAcum && !ploaieAnterior) {
+    timpDetectie = acum;
+  }
+
+  ploaieAnterior = ploaieAcum;
+
+  if (ploaieAcum && (acum - timpDetectie >= TIMER_CONFIRMARE)) {
+    durataCiclu = (valoare > PRAG_INTENS) ? TIMP_CICLU_RAPID : TIMP_CICLU_NORMAL;
+    return true;
+  }
+
+  return false;
+}
+
+void miscaStergatoare() {
+  unsigned long acum = millis();
+  if (acum - ultimulPas < INTERVAL_SERVO) return;
+  ultimulPas = acum;
+
+  long viteza = map(durataCiclu, TIMP_CICLU_RAPID, TIMP_CICLU_NORMAL, 3, 1);
+  pozitieCurenta += directie * viteza;
+
+  if (pozitieCurenta >= UNGHIU_SFARSIT) {
+    pozitieCurenta = UNGHIU_SFARSIT;
+    directie = -1;
+  } else if (pozitieCurenta <= UNGHIU_PORNIRE) {
+    pozitieCurenta = UNGHIU_PORNIRE;
+    directie = 1;
+  }
+
+  stergatorStanga.write(pozitieCurenta);
+  stergatorDreapta.write(180 - pozitieCurenta);
+}
+
+void opresteStergatoare() {
+  if (pozitieCurenta == UNGHIU_PORNIRE) return;
+  stergatorStanga.write(UNGHIU_PORNIRE);
+  stergatorDreapta.write(180 - UNGHIU_PORNIRE);
+  pozitieCurenta = UNGHIU_PORNIRE;
+  directie = 1;
+}
+
+bool executaSwipe() {
+  unsigned long acum = millis();
+  if (acum - ultimulPas < INTERVAL_SERVO) return false;
+  ultimulPas = acum;
+
+  pozitieCurenta += directie * 2;
+
+  if (pozitieCurenta >= UNGHIU_SFARSIT) {
+    pozitieCurenta = UNGHIU_SFARSIT;
+    directie = -1;
+  } else if (pozitieCurenta <= UNGHIU_PORNIRE) {
+    pozitieCurenta = UNGHIU_PORNIRE;
+    directie = 1;
+    stergatorStanga.write(pozitieCurenta);
+    stergatorDreapta.write(180 - pozitieCurenta);
+    return true;
+  }
+
+  stergatorStanga.write(pozitieCurenta);
+  stergatorDreapta.write(180 - pozitieCurenta);
+  return false;
+}
+
+void citesteButon() {
+  unsigned long acum = millis();
+  int citire = digitalRead(BUTON_SWIPE);
+
+  if (citire != butonDebounce) ultimDebounce = acum;
+
+  if (acum - ultimDebounce > 50 && citire == LOW && butonDebounce == HIGH) {
+    if (!ploaieConfirmata && !swipeInProgress) {
+      swipeManual     = true;
+      swipeInProgress = true;
+      directie        = 1;
+    }
+  }
+
+  butonDebounce = citire;
+}
+
+void afiseazaStatus() {
+  Serial.print("Senzor: ");    Serial.print(citesteSenzor());
+  Serial.print(" | Ploaie: "); Serial.print(ploaieConfirmata ? "DA" : "NU");
+  Serial.print(" | Viteza: "); Serial.print(durataCiclu == TIMP_CICLU_RAPID ? "Rapida" : "Normala");
+  Serial.print(" | Swipe: ");  Serial.println(swipeInProgress ? "DA" : "NU");
+  digitalWrite(LED_STATUS, ploaieConfirmata ? HIGH : LOW);
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(SENZOR_PLOAIE, INPUT);
+  pinMode(LED_STATUS, OUTPUT);
+  pinMode(BUTON_SWIPE, INPUT_PULLUP);
+  stergatorStanga.attach(SERVO_STANGA);
+  stergatorDreapta.attach(SERVO_DREAPTA);
+  opresteStergatoare();
+}
+
+void loop() {
+  unsigned long acum = millis();
+
+  citesteButon();
+  ploaieConfirmata = verificaPloaie();
+
+  if (swipeInProgress) {
+    bool gata = executaSwipe();
+    if (gata) {
+      swipeInProgress = false;
+      swipeManual     = false;
+    }
+  } else if (ploaieConfirmata) {
+    miscaStergatoare();
+  } else {
+    opresteStergatoare();
+  }
+
+  static unsigned long ultimAfisaj = 0;
+  if (acum - ultimAfisaj >= 1000) {
+    ultimAfisaj = acum;
+    afiseazaStatus();
+  }
+}
